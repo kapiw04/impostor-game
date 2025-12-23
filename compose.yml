@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/app
+      - venv:/app/.venv
     ports:
       - "8000:8000"
 
@@ -12,3 +13,6 @@ services:
     image: "redis:alpine"
     ports:
       - "6379:6379"
+
+volumes:
+  venv:
