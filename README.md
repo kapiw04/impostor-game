@@ -4,7 +4,7 @@ FastAPI + Redis backend for a simple "secret word" game.
 
  ## Roadmap
 
-* [ ] Room lifecycle: create/join/leave, lobby state, start/end game, handle disconnect/reconnect.
+* [x] Room lifecycle: create/join/leave, lobby state, start/end game, handle disconnect/reconnect.
 * [ ] Roles + secret word: pick 1 impostor, pick a secret word from a category, distribute word to non-impostors, send “you are impostor” to impostor.
 * [ ] Rounds + turn order: timed speaking turns, track who already spoke, round transitions.
 * [ ] Voting: start vote phase, collect votes, handle ties/revote.

@@ -24,3 +24,9 @@ class WSManager:
     async def broadcast(self, conn_ids: Iterable[str], payload: dict[str, Any]) -> None:
         for cid in conn_ids:
             await self.send_to_conn(cid, payload)
+
+    async def disconnect_conn(self, conn_id: str) -> None:
+        ws = self._by_id.get(conn_id)
+        if ws:
+            await ws.close()
+            self.disconnect(ws)
