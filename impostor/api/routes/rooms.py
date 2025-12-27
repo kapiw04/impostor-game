@@ -3,6 +3,9 @@ from pydantic import BaseModel
 from starlette.testclient import WebSocketDenialResponse
 from impostor.api.deps import RoomServiceDep, WSManagerDep
 from impostor.application.errors import RoomNotFoundError, RoomFullError
+from impostor.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 rooms_router = APIRouter(prefix="/rooms")
 
@@ -61,7 +64,7 @@ async def websocket_endpoint(
     except Exception:
         raise WebSocketDenialResponse(status_code=status.WS_1011_INTERNAL_ERROR)
 
-    conns = [p.conn_id for p in room.players]
+    conns = [p.conn_id for p in room.players or []]
 
     await ws_manager.broadcast(
         conns,
@@ -78,6 +81,7 @@ async def websocket_endpoint(
             msg_type = data.get("type")
 
             if msg_type == "msg":
+                logger.info("ws_msg_received", conn_id=conn_id, nick=nick)
                 await ws_manager.broadcast(
                     conns,
                     {
@@ -88,12 +92,14 @@ async def websocket_endpoint(
                 )
             elif msg_type == "kick":
                 target_id = data.get("target_id")
+                logger.info("ws_kick_requested", host_id=conn_id, target_id=target_id)
                 try:
                     await room_service.kick_player(
                         room_id=room_id, host_id=conn_id, target_conn_id=target_id
                     )
                     await ws_manager.disconnect_conn(target_id)
                 except Exception:
+                    logger.error("ws_kick_failed", host_id=conn_id, target_id=target_id)
                     pass
             elif msg_type == "settings":
                 new_max = data.get("max_players")
@@ -121,7 +127,7 @@ async def websocket_endpoint(
         
         room = await room_service._store.get_room(room_id)
         if room:
-            conns = [p.conn_id for p in room.players]
+            conns = [p.conn_id for p in room.players or []]
             await ws_manager.broadcast(
                 conns,
                 {

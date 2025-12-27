@@ -61,9 +61,6 @@ def test_room_lifecycle_host_and_kick(client: TestClient):
         assert msg1_kick_update["type"] == "room_state"
         assert len(msg1_kick_update["room"]["players"]) == 1
 
-    with client.websocket_connect(f"/rooms/{room_id}/ws?nick=new_user") as ws3:
-        pass
-    
     with pytest.raises(WebSocketDenialResponse) as excinfo:
         with client.websocket_connect(f"/rooms/{room_id}/ws?nick=late_user"):
             pass

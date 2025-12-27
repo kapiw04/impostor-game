@@ -3,6 +3,9 @@ from typing import Any, Awaitable, TypeVar, cast
 from redis.asyncio.client import Redis
 
 from impostor.domain.models import Room, Player, RoomSettings
+from impostor.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -29,6 +32,7 @@ class RedisRoomStore:
     async def create_room(
         self, room_id: str, room_name: str, settings: RoomSettings
     ) -> None:
+        logger.info("redis_creating_room", room_id=room_id, room_name=room_name)
         await _await(
             self._r.hset(
                 self._room_key(room_id),
@@ -59,6 +63,7 @@ class RedisRoomStore:
         await _await(self._r.hset(self._room_key(room_id), mapping=kwargs))
 
     async def delete_room(self, room_id: str) -> None:
+        logger.info("redis_deleting_room", room_id=room_id)
         conns = await self.list_conns(room_id)
         for conn_id in conns:
             await self.remove_conn(room_id, conn_id)
