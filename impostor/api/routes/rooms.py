@@ -25,6 +25,7 @@ class LobbyPlayer(BaseModel):
 
 class LobbyState(BaseModel):
     room_id: str
+    name: str
     players: dict[str, LobbyPlayer]
     host: str | None = None
     settings: dict[str, Any]

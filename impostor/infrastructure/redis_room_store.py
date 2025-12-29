@@ -36,6 +36,12 @@ class RedisRoomStore:
     def _room_result_key(self, room_id: str) -> str:
         return f"room:{room_id}:game_result"
 
+    def _room_word_key(self, room_id: str) -> str:
+        return f"room:{room_id}:secret_word"
+
+    def _room_impostor_key(self, room_id: str) -> str:
+        return f"room:{room_id}:impostor"
+
     def _conn_key(self, conn_id: str) -> str:
         return f"conn:{conn_id}"
 
@@ -109,6 +115,7 @@ class RedisRoomStore:
                 settings[key] = value
         return {
             "room_id": room_id,
+            "name": room_name,
             "players": players,
             "host": host,
             "settings": settings,
@@ -129,6 +136,26 @@ class RedisRoomStore:
         await _await(self._r.set(self._room_result_key(room_id), json.dumps(result)))
         return result
 
+    async def set_secret_word(self, room_id: str, word: str) -> None:
+        await _await(self._r.set(self._room_word_key(room_id), word))
+
+    async def get_secret_word(self, room_id: str) -> str | None:
+        return await _await(self._r.get(self._room_word_key(room_id)))
+
+    async def set_impostor(self, room_id: str, conn_id: str) -> None:
+        await _await(self._r.set(self._room_impostor_key(room_id), conn_id))
+
+    async def set_role(self, room_id: str, conn_id: str, role: str) -> None:
+        del room_id
+        await _await(self._r.hset(self._conn_key(conn_id), mapping={"role": role}))
+
+    async def clear_roles(self, room_id: str) -> None:
+        conns = await self.list_conns(room_id)
+        for conn_id in conns:
+            await _await(self._r.hdel(self._conn_key(conn_id), "role"))
+        await _await(self._r.delete(self._room_word_key(room_id)))
+        await _await(self._r.delete(self._room_impostor_key(room_id)))
+
     async def issue_resume_token(self, room_id: str, conn_id: str) -> str:
         data = await _await(self._r.hgetall(self._conn_key(conn_id)))
         token = secrets.token_urlsafe(24)
@@ -137,6 +164,8 @@ class RedisRoomStore:
             mapping["nickname"] = data["nickname"]
         if "ready" in data:
             mapping["ready"] = data["ready"]
+        if "role" in data:
+            mapping["role"] = data["role"]
         await _await(self._r.hset(self._resume_token_key(token), mapping=mapping))
         return token
 

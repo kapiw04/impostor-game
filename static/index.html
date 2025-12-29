@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Impostor</title>
+  </head>
+  <body>
+    <main>
+      <h1>Impostor</h1>
+      <p id="status"></p>
+
+      <section id="screen-setup">
+        <h2>Start</h2>
+        <section>
+          <h3>Create room</h3>
+          <label>
+            Room name
+            <input id="create-room-name" type="text" />
+          </label>
+          <button id="create-room-btn" type="button">Create room</button>
+          <p>New room ID: <span id="created-room-id"></span></p>
+        </section>
+
+        <section>
+          <h3>Join room</h3>
+          <label>
+            Room ID
+            <input id="join-room-id" type="text" />
+          </label>
+          <label>
+            Nickname
+            <input id="join-nick" type="text" />
+          </label>
+          <button id="join-room-btn" type="button">Join room</button>
+        </section>
+      </section>
+
+      <section id="screen-lobby" hidden>
+        <h2>Lobby</h2>
+        <p>
+          Room: <span id="lobby-room-name"></span>
+          (<span id="lobby-room-id"></span>)
+        </p>
+
+        <h3>Players</h3>
+        <ul id="players-list"></ul>
+
+        <label>
+          Ready
+          <input id="ready-flag" type="checkbox" />
+        </label>
+
+        <div>
+          <button id="start-game-btn" type="button">Start game</button>
+          <button id="end-game-btn" type="button">End game</button>
+        </div>
+
+        <section id="screen-game" hidden>
+          <h3>Game</h3>
+          <p>Role: <span id="role-value">unknown</span></p>
+          <p>Secret word: <span id="word-value">unknown</span></p>
+        </section>
+
+        <h3>Chat</h3>
+        <ul id="chat-log"></ul>
+        <label>
+          Message
+          <input id="chat-text" type="text" />
+        </label>
+        <button id="chat-send-btn" type="button">Send</button>
+
+        <div>
+          <button id="leave-btn" type="button">Leave room</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

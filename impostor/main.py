@@ -1,8 +1,10 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from impostor.api.routes.rooms import rooms_router
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
 import os
+from pathlib import Path
 
 from impostor.application.room_service import RoomService
 from impostor.infrastructure.redis_room_store import RedisRoomStore
@@ -27,6 +29,9 @@ def app_factory(redis_url):
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(rooms_router)
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=static_dir, html=True), name="static")
 
     return app
 

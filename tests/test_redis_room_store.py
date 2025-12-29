@@ -97,6 +97,7 @@ async def test_resume_token_round_trip(redis_client):
     await store.create_room("room-1", "Room One")
     await store.add_conn("room-1", "conn-1", nickname="Nick")
     await store.set_ready("room-1", "conn-1", True)
+    await store.set_role("room-1", "conn-1", "crew")
 
     token = await store.issue_resume_token("room-1", "conn-1")
     data = await store.consume_resume_token(token)
@@ -104,6 +105,25 @@ async def test_resume_token_round_trip(redis_client):
     assert data["room_id"] == "room-1"
     assert data["nickname"] == "Nick"
     assert data["ready"] is True
+    assert data["role"] == "crew"
 
     with pytest.raises(KeyError):
         await store.consume_resume_token(token)
+
+
+async def test_role_storage_and_clear(redis_client):
+    store = RedisRoomStore(redis_client)
+
+    await store.create_room("room-1", "Room One")
+    await store.add_conn("room-1", "conn-1", nickname="Nick")
+    await store.set_secret_word("room-1", "apple")
+    await store.set_impostor("room-1", "conn-1")
+    await store.set_role("room-1", "conn-1", "impostor")
+
+    assert await store.get_secret_word("room-1") == "apple"
+
+    await store.clear_roles("room-1")
+
+    assert await store.get_secret_word("room-1") is None
+    data = await redis_client.hgetall("conn:conn-1")
+    assert "role" not in data

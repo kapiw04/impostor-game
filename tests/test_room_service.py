@@ -17,6 +17,11 @@ def store(mocker):
     store.remove_conn = mocker.AsyncMock()
     store.set_ready = mocker.AsyncMock()
     store.get_lobby_state = mocker.AsyncMock()
+    store.set_secret_word = mocker.AsyncMock()
+    store.set_impostor = mocker.AsyncMock()
+    store.set_role = mocker.AsyncMock()
+    store.clear_roles = mocker.AsyncMock()
+    store.get_secret_word = mocker.AsyncMock()
     return store
 
 

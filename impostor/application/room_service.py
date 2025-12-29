@@ -4,6 +4,7 @@ from typing import Any, Awaitable, Callable, TypeVar, cast
 
 from impostor.application.ports import Notifier, RoomStore
 from impostor.domain.models import Room
+from impostor.domain.word_pool import pick_secret_word
 from impostor.application.errors import RoomNotFoundError
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
@@ -40,6 +41,9 @@ class RoomService:
     def _make_room_id(self, n: int = 8) -> str:
         ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
         return "".join(secrets.choice(ALPHABET) for _ in range(n))
+
+    def _pick_impostor(self, conns: list[str]) -> str:
+        return secrets.choice(conns)
 
     async def create_room(self, room_name: str) -> Room:
         room_id = self._make_room_id()
@@ -87,6 +91,7 @@ class RoomService:
         if not players or any(not player.get("ready") for player in players):
             raise RuntimeError("all players must be ready")
         await self._store.set_game_state(room_id, "in_progress")
+        await self.assign_roles(room_id, notifier)
         conns = await self._store.list_conns(room_id)
         await notifier.broadcast(conns, {"type": "game_started", "room_id": room_id})
 
@@ -103,6 +108,7 @@ class RoomService:
             conns,
             {"type": "game_ended", "room_id": room_id, "result": result},
         )
+        await self._store.clear_roles(room_id)
         return result
 
     @room_exists
@@ -123,12 +129,49 @@ class RoomService:
         nickname = resume.get("nickname")
         ready_value = resume.get("ready")
         ready = ready_value is True or ready_value == "1"
+        role = resume.get("role")
         await self._store.add_conn(room_id, conn_id, nickname=nickname)
         if ready:
             await self._store.set_ready(room_id, conn_id, True)
+        if role:
+            await self._store.set_role(room_id, conn_id, role)
+            if role == "impostor":
+                await notifier.send_to_conn(
+                    conn_id,
+                    {"type": "role", "role": "impostor", "message": "you are impostor"},
+                )
+            else:
+                word = await self._store.get_secret_word(room_id)
+                if word:
+                    await notifier.send_to_conn(
+                        conn_id,
+                        {"type": "role", "role": "crew", "word": word},
+                    )
         state = await self.get_lobby_state(room_id)
         await notifier.send_to_conn(
             conn_id,
             {"type": "lobby_state", "room_id": room_id, "state": state},
         )
         return state
+
+    @room_exists
+    async def assign_roles(self, room_id: str, notifier: Notifier) -> None:
+        conns = sorted(await self._store.list_conns(room_id))
+        if not conns:
+            raise RuntimeError("no players in room")
+        word = pick_secret_word()
+        impostor = self._pick_impostor(conns)
+        await self._store.set_secret_word(room_id, word)
+        await self._store.set_impostor(room_id, impostor)
+        for conn_id in conns:
+            if conn_id == impostor:
+                await self._store.set_role(room_id, conn_id, "impostor")
+                await notifier.send_to_conn(
+                    conn_id,
+                    {"type": "role", "role": "impostor", "message": "you are impostor"},
+                )
+            else:
+                await self._store.set_role(room_id, conn_id, "crew")
+                await notifier.send_to_conn(
+                    conn_id, {"type": "role", "role": "crew", "word": word}
+                )
