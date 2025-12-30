@@ -22,6 +22,12 @@ def store(mocker):
     store.set_role = mocker.AsyncMock()
     store.clear_roles = mocker.AsyncMock()
     store.get_secret_word = mocker.AsyncMock()
+    store.set_turn_order = mocker.AsyncMock()
+    store.get_turn_order = mocker.AsyncMock(return_value=[])
+    store.set_turn_state = mocker.AsyncMock()
+    store.get_turn_state = mocker.AsyncMock(return_value=None)
+    store.clear_turn_state = mocker.AsyncMock()
+    store.peek_resume_token = mocker.AsyncMock()
     return store
 
 

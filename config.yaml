@@ -1,0 +1,7 @@
+timer_tick_seconds: 1
+redis_room_store:
+  settings:
+    round_time: 60
+    max_players: 8
+    turn_duration: 30
+    turn_grace: 60

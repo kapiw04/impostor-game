@@ -1,28 +1,10 @@
 import secrets
-from functools import wraps
-from typing import Any, Awaitable, Callable, TypeVar, cast
+from typing import Any
 
-from impostor.application.ports import Notifier, RoomStore
-from impostor.domain.models import Room
-from impostor.domain.word_pool import pick_secret_word
 from impostor.application.errors import RoomNotFoundError
-
-F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
-
-
-def room_exists(func: F) -> F:
-    @wraps(func)
-    async def wrapper(self: "RoomService", *args: Any, **kwargs: Any) -> Any:
-        room_id = kwargs.get("room_id")
-        if room_id is None:
-            if not args:
-                raise ValueError("room_id is required")
-            room_id = args[0]
-        if await self._store.get_room_name(room_id) is None:
-            raise RoomNotFoundError(room_id)
-        return await func(self, *args, **kwargs)
-
-    return cast(F, wrapper)
+from impostor.application.guards import room_exists
+from impostor.application.ports import RoomStore
+from impostor.domain.models import Room
 
 
 class RoomService:
@@ -39,11 +21,8 @@ class RoomService:
         return room_name
 
     def _make_room_id(self, n: int = 8) -> str:
-        ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-        return "".join(secrets.choice(ALPHABET) for _ in range(n))
-
-    def _pick_impostor(self, conns: list[str]) -> str:
-        return secrets.choice(conns)
+        alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+        return "".join(secrets.choice(alphabet) for _ in range(n))
 
     async def create_room(self, room_name: str) -> Room:
         room_id = self._make_room_id()
@@ -81,97 +60,33 @@ class RoomService:
             raise RoomNotFoundError(room_id)
         return state
 
-    async def start_game(
-        self, room_id: str, started_by: str, notifier: Notifier
-    ) -> None:
-        state = await self.get_lobby_state(room_id)
-        if state["host"] != started_by:
-            raise PermissionError("only host can start the game")
-        players = state["players"].values()
-        if not players or any(not player.get("ready") for player in players):
-            raise RuntimeError("all players must be ready")
-        await self._store.set_game_state(room_id, "in_progress")
-        await self.assign_roles(room_id, notifier)
-        conns = await self._store.list_conns(room_id)
-        await notifier.broadcast(conns, {"type": "game_started", "room_id": room_id})
-
-    @room_exists
-    async def end_game(
-        self,
-        room_id: str,
-        notifier: Notifier,
-        result: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        result = await self._store.end_game(room_id, result=result)
-        conns = await self._store.list_conns(room_id)
-        await notifier.broadcast(
-            conns,
-            {"type": "game_ended", "room_id": room_id, "result": result},
-        )
-        await self._store.clear_roles(room_id)
-        return result
-
     @room_exists
     async def disconnect(self, room_id: str, conn_id: str) -> str:
         token = await self._store.issue_resume_token(room_id, conn_id)
         await self._store.remove_conn(room_id, conn_id)
         return token
 
-    async def reconnect(
-        self, token: str, conn_id: str, notifier: Notifier
-    ) -> dict[str, Any]:
+    async def preview_reconnect(self, token: str) -> dict[str, Any]:
+        resume = await self._store.peek_resume_token(token)
+        if "room_id" not in resume or "conn_id" not in resume:
+            raise KeyError(token)
+        return resume
+
+    async def reconnect(self, token: str) -> tuple[dict[str, Any], dict[str, Any]]:
         resume = await self._store.consume_resume_token(token)
         room_id = resume.get("room_id")
         if not room_id:
+            raise KeyError(token)
+        conn_id = resume.get("conn_id")
+        if not conn_id:
             raise KeyError(token)
         if await self._store.get_room_name(room_id) is None:
             raise RoomNotFoundError(room_id)
         nickname = resume.get("nickname")
         ready_value = resume.get("ready")
         ready = ready_value is True or ready_value == "1"
-        role = resume.get("role")
         await self._store.add_conn(room_id, conn_id, nickname=nickname)
         if ready:
             await self._store.set_ready(room_id, conn_id, True)
-        if role:
-            await self._store.set_role(room_id, conn_id, role)
-            if role == "impostor":
-                await notifier.send_to_conn(
-                    conn_id,
-                    {"type": "role", "role": "impostor", "message": "you are impostor"},
-                )
-            else:
-                word = await self._store.get_secret_word(room_id)
-                if word:
-                    await notifier.send_to_conn(
-                        conn_id,
-                        {"type": "role", "role": "crew", "word": word},
-                    )
         state = await self.get_lobby_state(room_id)
-        await notifier.send_to_conn(
-            conn_id,
-            {"type": "lobby_state", "room_id": room_id, "state": state},
-        )
-        return state
-
-    @room_exists
-    async def assign_roles(self, room_id: str, notifier: Notifier) -> None:
-        conns = sorted(await self._store.list_conns(room_id))
-        if not conns:
-            raise RuntimeError("no players in room")
-        word = pick_secret_word()
-        impostor = self._pick_impostor(conns)
-        await self._store.set_secret_word(room_id, word)
-        await self._store.set_impostor(room_id, impostor)
-        for conn_id in conns:
-            if conn_id == impostor:
-                await self._store.set_role(room_id, conn_id, "impostor")
-                await notifier.send_to_conn(
-                    conn_id,
-                    {"type": "role", "role": "impostor", "message": "you are impostor"},
-                )
-            else:
-                await self._store.set_role(room_id, conn_id, "crew")
-                await notifier.send_to_conn(
-                    conn_id, {"type": "role", "role": "crew", "word": word}
-                )
+        return resume, state

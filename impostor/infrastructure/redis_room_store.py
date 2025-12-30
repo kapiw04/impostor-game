@@ -4,8 +4,9 @@ import secrets
 from typing import Any, Awaitable, TypeVar, cast
 from redis.asyncio.client import Redis
 
+from impostor.config import Config
+
 T = TypeVar("T")
-DEFAULT_SETTINGS: dict[str, int] = {"round_time": 60, "max_players": 8}
 
 
 async def _await(x: T | Awaitable[T]) -> T:
@@ -15,8 +16,11 @@ async def _await(x: T | Awaitable[T]) -> T:
 
 
 class RedisRoomStore:
-    def __init__(self, r: Redis):
+    def __init__(self, r: Redis, config: Config | None = None):
         self._r = r
+        self._default_settings = (
+            config or Config()
+        ).redis_room_store.settings.as_dict()
 
     def _room_key(self, room_id: str) -> str:
         return f"room:{room_id}"
@@ -42,6 +46,12 @@ class RedisRoomStore:
     def _room_impostor_key(self, room_id: str) -> str:
         return f"room:{room_id}:impostor"
 
+    def _turn_order_key(self, room_id: str) -> str:
+        return f"room:{room_id}:turn_order"
+
+    def _turn_state_key(self, room_id: str) -> str:
+        return f"room:{room_id}:turn_state"
+
     def _conn_key(self, conn_id: str) -> str:
         return f"conn:{conn_id}"
 
@@ -50,7 +60,7 @@ class RedisRoomStore:
 
     async def create_room(self, room_id: str, room_name: str) -> None:
         await _await(self._r.set(self._room_key(room_id), room_name))
-        settings = {key: str(value) for key, value in DEFAULT_SETTINGS.items()}
+        settings = {key: str(value) for key, value in self._default_settings.items()}
         await _await(self._r.hset(self._room_settings_key(room_id), mapping=settings))
         await _await(self._r.set(self._room_state_key(room_id), "lobby"))
 
@@ -107,7 +117,7 @@ class RedisRoomStore:
             }
         host = await _await(self._r.get(self._room_host_key(room_id)))
         raw_settings = await _await(self._r.hgetall(self._room_settings_key(room_id)))
-        settings: dict[str, Any] = {**DEFAULT_SETTINGS}
+        settings: dict[str, Any] = {**self._default_settings}
         for key, value in raw_settings.items():
             if value.isdigit():
                 settings[key] = int(value)
@@ -156,10 +166,49 @@ class RedisRoomStore:
         await _await(self._r.delete(self._room_word_key(room_id)))
         await _await(self._r.delete(self._room_impostor_key(room_id)))
 
+    async def set_turn_order(self, room_id: str, order: list[str]) -> None:
+        key = self._turn_order_key(room_id)
+        await _await(self._r.delete(key))
+        if order:
+            await _await(self._r.rpush(key, *order))
+
+    async def get_turn_order(self, room_id: str) -> list[str]:
+        return await _await(self._r.lrange(self._turn_order_key(room_id), 0, -1))
+
+    async def set_turn_state(self, room_id: str, state: dict[str, Any]) -> None:
+        mapping = {key: str(value) for key, value in state.items()}
+        await _await(self._r.hset(self._turn_state_key(room_id), mapping=mapping))
+
+    async def get_turn_state(self, room_id: str) -> dict[str, Any] | None:
+        data = await _await(self._r.hgetall(self._turn_state_key(room_id)))
+        if not data:
+            return None
+        parsed: dict[str, Any] = {}
+        int_keys = {
+            "round",
+            "turn_index",
+            "turn_remaining",
+            "turn_duration",
+            "turn_grace",
+        }
+        float_keys = {"deadline_ts", "grace_deadline_ts"}
+        for key, value in data.items():
+            if key in int_keys:
+                parsed[key] = int(value)
+            elif key in float_keys:
+                parsed[key] = float(value)
+            else:
+                parsed[key] = value
+        return parsed
+
+    async def clear_turn_state(self, room_id: str) -> None:
+        await _await(self._r.delete(self._turn_state_key(room_id)))
+        await _await(self._r.delete(self._turn_order_key(room_id)))
+
     async def issue_resume_token(self, room_id: str, conn_id: str) -> str:
         data = await _await(self._r.hgetall(self._conn_key(conn_id)))
         token = secrets.token_urlsafe(24)
-        mapping: dict[str, Any] = {"room_id": room_id}
+        mapping: dict[str, Any] = {"room_id": room_id, "conn_id": conn_id}
         if "nickname" in data:
             mapping["nickname"] = data["nickname"]
         if "ready" in data:
@@ -168,6 +217,15 @@ class RedisRoomStore:
             mapping["role"] = data["role"]
         await _await(self._r.hset(self._resume_token_key(token), mapping=mapping))
         return token
+
+    async def peek_resume_token(self, token: str) -> dict[str, Any]:
+        key = self._resume_token_key(token)
+        data = await _await(self._r.hgetall(key))
+        if not data:
+            raise KeyError(token)
+        if "ready" in data:
+            data["ready"] = data["ready"] == "1"
+        return data
 
     async def consume_resume_token(self, token: str) -> dict[str, Any]:
         key = self._resume_token_key(token)

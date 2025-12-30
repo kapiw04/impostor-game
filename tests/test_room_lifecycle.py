@@ -1,10 +1,19 @@
 import pytest
 from pytest_mock import MockerFixture
 
+from impostor.application.game_service import GameService
 from impostor.application.room_service import RoomService
 
 
 pytestmark = pytest.mark.anyio
+
+
+class DummyNotifier:
+    async def send_to_conn(self, conn_id: str, payload: dict[str, object]) -> None:
+        return None
+
+    async def broadcast(self, conn_ids: object, payload: dict[str, object]) -> None:
+        return None
 
 
 async def test_lobby_state_includes_players_ready_host_settings(mocker: MockerFixture):
@@ -51,10 +60,9 @@ async def test_start_game_requires_host_and_all_ready(mocker: MockerFixture):
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
-    assign_roles = mocker.patch.object(
-        service, "assign_roles", new=mocker.AsyncMock()
-    )
+    service = GameService(store)
+    assign_roles = mocker.patch.object(service, "assign_roles", new=mocker.AsyncMock())
+    start_rounds = mocker.patch.object(service, "_start_rounds", new=mocker.AsyncMock())
 
     await service.start_game("room-1", started_by="conn-1", notifier=notifier)
 
@@ -62,6 +70,9 @@ async def test_start_game_requires_host_and_all_ready(mocker: MockerFixture):
     store.get_lobby_state.assert_awaited_once_with("room-1")
     store.set_game_state.assert_awaited_once_with("room-1", "in_progress")
     assign_roles.assert_awaited_once_with("room-1", notifier)
+    start_rounds.assert_awaited_once_with(
+        "room-1", notifier, store.get_lobby_state.return_value
+    )
     notifier.broadcast.assert_awaited_once_with(
         {"conn-1", "conn-2"}, {"type": "game_started", "room_id": "room-1"}
     )
@@ -85,10 +96,9 @@ async def test_start_game_rejects_non_host_or_not_ready(mocker: MockerFixture):
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
-    assign_roles = mocker.patch.object(
-        service, "assign_roles", new=mocker.AsyncMock()
-    )
+    service = GameService(store)
+    assign_roles = mocker.patch.object(service, "assign_roles", new=mocker.AsyncMock())
+    start_rounds = mocker.patch.object(service, "_start_rounds", new=mocker.AsyncMock())
 
     with pytest.raises(PermissionError):
         await service.start_game("room-1", started_by="conn-2", notifier=notifier)
@@ -98,6 +108,7 @@ async def test_start_game_rejects_non_host_or_not_ready(mocker: MockerFixture):
 
     assert store.set_game_state.await_count == 0
     assert assign_roles.await_count == 0
+    assert start_rounds.await_count == 0
     assert notifier.broadcast.await_count == 0
 
 
@@ -109,9 +120,10 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
     )
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2"})
     store.clear_roles = mocker.AsyncMock()
+    store.clear_turn_state = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
-    service = RoomService(store)
+    service = GameService(store)
 
     result = await service.end_game("room-1", notifier=notifier)
 
@@ -123,6 +135,7 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
         {"type": "game_ended", "room_id": "room-1", "result": result},
     )
     store.clear_roles.assert_awaited_once_with("room-1")
+    store.clear_turn_state.assert_awaited_once_with("room-1")
 
 
 async def test_disconnect_removes_conn_and_returns_resume_token(
@@ -142,11 +155,12 @@ async def test_disconnect_removes_conn_and_returns_resume_token(
     assert token == "resume-token"
 
 
-async def test_reconnect_sends_state_snapshot(mocker: MockerFixture):
+async def test_reconnect_returns_state_and_resends_role(mocker: MockerFixture):
     store = mocker.Mock()
     store.consume_resume_token = mocker.AsyncMock(
         return_value={
             "room_id": "room-1",
+            "conn_id": "conn-3",
             "nickname": "Player",
             "ready": True,
             "role": "crew",
@@ -165,35 +179,35 @@ async def test_reconnect_sends_state_snapshot(mocker: MockerFixture):
             "settings": {"round_time": 60},
         }
     )
-    notifier = mocker.Mock()
-    notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
+    room_service = RoomService(store)
 
-    await service.reconnect("resume-token", "conn-3", notifier=notifier)
+    resume, state = await room_service.reconnect("resume-token")
 
     store.consume_resume_token.assert_awaited_once_with("resume-token")
     store.add_conn.assert_awaited_once_with("room-1", "conn-3", nickname="Player")
     store.set_ready.assert_awaited_once_with("room-1", "conn-3", True)
+    store.get_lobby_state.assert_awaited_once_with("room-1")
+    assert resume["role"] == "crew"
+    assert state["room_id"] == "room-1"
+
+    notifier = DummyNotifier()
+    send_spy = mocker.spy(notifier, "send_to_conn")
+    game_service = GameService(store)
+    store.get_turn_state = mocker.AsyncMock(return_value=None)
+
+    await game_service.handle_reconnect(
+        resume["room_id"], resume["conn_id"], resume.get("role"), notifier
+    )
+
     store.set_role.assert_awaited_once_with("room-1", "conn-3", "crew")
     store.get_secret_word.assert_awaited_once_with("room-1")
-    store.get_lobby_state.assert_awaited_once_with("room-1")
-    assert notifier.send_to_conn.await_count == 2
-    notifier.send_to_conn.assert_any_await(
-        "conn-3", {"type": "role", "role": "crew", "word": "apple"}
-    )
-    notifier.send_to_conn.assert_any_await(
-        "conn-3",
-        {
-            "type": "lobby_state",
-            "room_id": "room-1",
-            "state": {
-                "room_id": "room-1",
-                "players": {"conn-2": {"nick": "Host", "ready": True}},
-                "host": "conn-2",
-                "settings": {"round_time": 60},
-            },
-        },
-    )
+    send_spy.assert_called_once()
+    assert send_spy.call_args.args[0] == "conn-3"
+    assert send_spy.call_args.args[1] == {
+        "type": "role",
+        "role": "crew",
+        "word": "apple",
+    }
 
 
 async def test_reconnect_impostor_sends_notice_only(mocker: MockerFixture):
@@ -201,6 +215,7 @@ async def test_reconnect_impostor_sends_notice_only(mocker: MockerFixture):
     store.consume_resume_token = mocker.AsyncMock(
         return_value={
             "room_id": "room-1",
+            "conn_id": "conn-9",
             "nickname": "Impostor",
             "ready": False,
             "role": "impostor",
@@ -219,18 +234,28 @@ async def test_reconnect_impostor_sends_notice_only(mocker: MockerFixture):
             "settings": {"round_time": 60},
         }
     )
-    notifier = mocker.Mock()
-    notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
+    room_service = RoomService(store)
 
-    await service.reconnect("resume-token", "conn-9", notifier=notifier)
+    resume, _state = await room_service.reconnect("resume-token")
 
     store.consume_resume_token.assert_awaited_once_with("resume-token")
     store.add_conn.assert_awaited_once_with("room-1", "conn-9", nickname="Impostor")
     store.set_ready.assert_not_called()
+    notifier = DummyNotifier()
+    send_spy = mocker.spy(notifier, "send_to_conn")
+    game_service = GameService(store)
+    store.get_turn_state = mocker.AsyncMock(return_value=None)
+
+    await game_service.handle_reconnect(
+        resume["room_id"], resume["conn_id"], resume.get("role"), notifier
+    )
+
     store.set_role.assert_awaited_once_with("room-1", "conn-9", "impostor")
     store.get_secret_word.assert_not_called()
-    notifier.send_to_conn.assert_any_await(
-        "conn-9",
-        {"type": "role", "role": "impostor", "message": "you are impostor"},
-    )
+    send_spy.assert_called_once()
+    assert send_spy.call_args.args[0] == "conn-9"
+    assert send_spy.call_args.args[1] == {
+        "type": "role",
+        "role": "impostor",
+        "message": "you are impostor",
+    }

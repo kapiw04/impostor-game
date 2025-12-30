@@ -6,12 +6,16 @@ import redis.asyncio as redis
 import os
 from pathlib import Path
 
+from impostor.application.game_service import GameService
 from impostor.application.room_service import RoomService
+from impostor.config import Config
 from impostor.infrastructure.redis_room_store import RedisRoomStore
 from impostor.infrastructure.ws_manager import WSManager
 
 
 def app_factory(redis_url):
+    config = Config.load()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.redis = redis.from_url(
@@ -19,9 +23,11 @@ def app_factory(redis_url):
             decode_responses=True,
             health_check_interval=30,
         )
+        app.state.config = config
         app.state.ws_manager = WSManager()
-        app.state.room_store = RedisRoomStore(app.state.redis)
+        app.state.room_store = RedisRoomStore(app.state.redis, config=config)
         app.state.room_service = RoomService(app.state.room_store)
+        app.state.game_service = GameService(app.state.room_store, config=config)
         try:
             yield
         finally:

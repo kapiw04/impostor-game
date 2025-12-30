@@ -103,6 +103,7 @@ async def test_resume_token_round_trip(redis_client):
     data = await store.consume_resume_token(token)
 
     assert data["room_id"] == "room-1"
+    assert data["conn_id"] == "conn-1"
     assert data["nickname"] == "Nick"
     assert data["ready"] is True
     assert data["role"] == "crew"

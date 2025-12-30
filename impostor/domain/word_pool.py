@@ -1,5 +1,3 @@
-import secrets
-
 WORDS = [
     "apple",
     "river",
@@ -14,7 +12,3 @@ WORDS = [
     "garden",
     "island",
 ]
-
-
-def pick_secret_word() -> str:
-    return secrets.choice(WORDS)

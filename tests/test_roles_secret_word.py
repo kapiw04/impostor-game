@@ -4,7 +4,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from impostor.application.errors import RoomNotFoundError
-from impostor.application.room_service import RoomService
+from impostor.application.game_service import GameService
 
 
 pytestmark = pytest.mark.anyio
@@ -21,8 +21,8 @@ async def test_assign_roles_distributes_word_and_impostor_notice(
     store.set_role = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
-    mocker.patch("impostor.application.room_service.pick_secret_word", return_value="apple")
+    service = GameService(store)
+    mocker.patch.object(service, "_pick_secret_word", return_value="apple")
     mocker.patch.object(service, "_pick_impostor", return_value="conn-1")
 
     await service.assign_roles("room-1", notifier=notifier)
@@ -69,8 +69,8 @@ async def test_assign_roles_picks_exactly_one_impostor(mocker: MockerFixture):
     store.set_role = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
-    mocker.patch("impostor.application.room_service.pick_secret_word", return_value="river")
+    service = GameService(store)
+    mocker.patch.object(service, "_pick_secret_word", return_value="river")
     mocker.patch.object(service, "_pick_impostor", return_value="conn-3")
 
     await service.assign_roles("room-2", notifier=notifier)
@@ -88,7 +88,7 @@ async def test_assign_roles_requires_players(mocker: MockerFixture):
     store.set_role = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
+    service = GameService(store)
 
     with pytest.raises(RuntimeError):
         await service.assign_roles("room-1", notifier=notifier)
@@ -104,7 +104,7 @@ async def test_assign_roles_missing_room_raises(mocker: MockerFixture):
     store.list_conns = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.send_to_conn = mocker.AsyncMock()
-    service = RoomService(store)
+    service = GameService(store)
 
     with pytest.raises(RoomNotFoundError):
         await service.assign_roles("room-404", notifier=notifier)
