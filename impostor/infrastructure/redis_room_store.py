@@ -46,6 +46,9 @@ class RedisRoomStore:
     def _room_impostor_key(self, room_id: str) -> str:
         return f"room:{room_id}:impostor"
 
+    def _room_votes_key(self, room_id: str) -> str:
+        return f"room:{room_id}:votes"
+
     def _turn_order_key(self, room_id: str) -> str:
         return f"room:{room_id}:turn_order"
 
@@ -155,6 +158,9 @@ class RedisRoomStore:
     async def set_impostor(self, room_id: str, conn_id: str) -> None:
         await _await(self._r.set(self._room_impostor_key(room_id), conn_id))
 
+    async def get_impostor(self, room_id: str) -> str | None:
+        return await _await(self._r.get(self._room_impostor_key(room_id)))
+
     async def set_role(self, room_id: str, conn_id: str, role: str) -> None:
         del room_id
         await _await(self._r.hset(self._conn_key(conn_id), mapping={"role": role}))
@@ -190,8 +196,9 @@ class RedisRoomStore:
             "turn_remaining",
             "turn_duration",
             "turn_grace",
+            "vote_duration",
         }
-        float_keys = {"deadline_ts", "grace_deadline_ts"}
+        float_keys = {"deadline_ts", "grace_deadline_ts", "vote_deadline_ts"}
         for key, value in data.items():
             if key in int_keys:
                 parsed[key] = int(value)
@@ -204,6 +211,23 @@ class RedisRoomStore:
     async def clear_turn_state(self, room_id: str) -> None:
         await _await(self._r.delete(self._turn_state_key(room_id)))
         await _await(self._r.delete(self._turn_order_key(room_id)))
+        await _await(self._r.delete(self._room_votes_key(room_id)))
+
+    async def set_vote(
+        self, room_id: str, voter_conn_id: str, target_conn_id: str
+    ) -> None:
+        await _await(
+            self._r.hset(
+                self._room_votes_key(room_id),
+                mapping={voter_conn_id: target_conn_id},
+            )
+        )
+
+    async def get_votes(self, room_id: str) -> dict[str, str]:
+        return await _await(self._r.hgetall(self._room_votes_key(room_id)))
+
+    async def clear_votes(self, room_id: str) -> None:
+        await _await(self._r.delete(self._room_votes_key(room_id)))
 
     async def issue_resume_token(self, room_id: str, conn_id: str) -> str:
         data = await _await(self._r.hgetall(self._conn_key(conn_id)))

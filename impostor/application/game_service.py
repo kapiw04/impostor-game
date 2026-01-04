@@ -1,4 +1,5 @@
 import asyncio
+import json
 import secrets
 import time
 from typing import Any
@@ -19,6 +20,7 @@ class GameService:
         self._timer_tick_seconds = self._config.timer_tick_seconds
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._grace_tasks: dict[str, asyncio.Task[None]] = {}
+        self._voting_tasks: dict[str, asyncio.Task[None]] = {}
         self._turn_locks: dict[str, asyncio.Lock] = {}
 
     def _pick_impostor(self, conns: list[str]) -> str:
@@ -37,6 +39,35 @@ class GameService:
     def _cancel_task(self, task: asyncio.Task[None] | None) -> None:
         if task and not task.done():
             task.cancel()
+
+    def _parse_voters(self, state: dict[str, Any]) -> list[str]:
+        raw = state.get("voters")
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(value) for value in raw]
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [str(value) for value in parsed]
+        return []
+
+    def _tally_votes(
+        self, votes: dict[str, str], voters: list[str]
+    ) -> dict[str, int]:
+        allowed_targets = set(voters)
+        allowed_targets.add("skip")
+        tally: dict[str, int] = {}
+        for voter, target in votes.items():
+            if voter not in voters:
+                continue
+            if target not in allowed_targets:
+                continue
+            tally[target] = tally.get(target, 0) + 1
+        return tally
 
     async def _get_turn_state_for_phase(
         self, room_id: str, phase: str
@@ -82,8 +113,10 @@ class GameService:
         )
         await self._store.clear_roles(room_id)
         await self._store.clear_turn_state(room_id)
+        await self._store.clear_votes(room_id)
         self._cancel_task(self._turn_tasks.pop(room_id, None))
         self._cancel_task(self._grace_tasks.pop(room_id, None))
+        self._cancel_task(self._voting_tasks.pop(room_id, None))
         return result
 
     @room_exists
@@ -157,47 +190,19 @@ class GameService:
         secrets.SystemRandom().shuffle(order)
         await self._store.set_turn_order(room_id, order)
         round_num = 1
-        turn_index = 0
-        current_conn = order[turn_index]
         settings = lobby_state.get("settings", {})
         turn_duration = int(settings.get("turn_duration", 30))
         turn_grace = int(settings.get("turn_grace", 60))
-        deadline = time.time() + turn_duration
-        await self._store.set_turn_state(
+        vote_duration = int(settings.get("round_time", 60))
+        await self._start_round(
             room_id,
-            {
-                "phase": "active",
-                "round": round_num,
-                "turn_index": turn_index,
-                "current_conn_id": current_conn,
-                "deadline_ts": deadline,
-                "turn_duration": turn_duration,
-                "turn_grace": turn_grace,
-            },
+            notifier,
+            round_num,
+            order,
+            turn_duration,
+            turn_grace,
+            vote_duration,
         )
-        conns_set = await self._store.list_conns(room_id)
-        await notifier.broadcast(
-            conns_set,
-            {
-                "type": "round_started",
-                "room_id": room_id,
-                "round": round_num,
-                "order": order,
-                "turn_duration": turn_duration,
-            },
-        )
-        await notifier.broadcast(
-            conns_set,
-            {
-                "type": "turn_started",
-                "room_id": room_id,
-                "round": round_num,
-                "turn_index": turn_index,
-                "conn_id": current_conn,
-                "turn_duration": turn_duration,
-            },
-        )
-        self._start_turn_timer(room_id, notifier)
 
     def _start_turn_timer(self, room_id: str, notifier: Notifier) -> None:
         self._cancel_task(self._turn_tasks.pop(room_id, None))
@@ -208,6 +213,11 @@ class GameService:
         self._cancel_task(self._grace_tasks.pop(room_id, None))
         task = asyncio.create_task(self._run_grace_timer(room_id, notifier))
         self._grace_tasks[room_id] = task
+
+    def _start_voting_timer(self, room_id: str, notifier: Notifier) -> None:
+        self._cancel_task(self._voting_tasks.pop(room_id, None))
+        task = asyncio.create_task(self._run_voting_timer(room_id, notifier))
+        self._voting_tasks[room_id] = task
 
     async def _run_turn_timer(self, room_id: str, notifier: Notifier) -> None:
         while True:
@@ -265,6 +275,24 @@ class GameService:
             )
             await asyncio.sleep(self._timer_tick_seconds)
 
+    async def _run_voting_timer(self, room_id: str, notifier: Notifier) -> None:
+        while True:
+            state = await self._get_turn_state_for_phase(room_id, "voting")
+            if not state:
+                return
+            deadline = state.get("vote_deadline_ts")
+            if deadline is None:
+                return
+            if time.time() >= deadline:
+                async with self._get_lock(room_id):
+                    state = await self._get_turn_state_for_phase(room_id, "voting")
+                    if not state:
+                        return
+                    await self._finalize_voting_locked(room_id, notifier, state)
+                self._voting_tasks.pop(room_id, None)
+                return
+            await asyncio.sleep(self._timer_tick_seconds)
+
     async def _advance_turn(
         self, room_id: str, notifier: Notifier, reason: TurnEndReason
     ) -> None:
@@ -297,32 +325,7 @@ class GameService:
         order = await self._store.get_turn_order(room_id)
         next_index = state["turn_index"] + 1
         if next_index >= len(order):
-            await self._store.set_turn_state(
-                room_id,
-                {
-                    **state,
-                    "phase": "voting",
-                },
-            )
-            await notifier.broadcast(
-                conns,
-                {
-                    "type": "round_ended",
-                    "room_id": room_id,
-                    "round": state["round"],
-                },
-            )
-            # TODO: hook into voting phase once implemented.
-            await notifier.broadcast(
-                conns,
-                {
-                    "type": "voting_started",
-                    "room_id": room_id,
-                    "round": state["round"],
-                },
-            )
-            self._cancel_task(self._turn_tasks.pop(room_id, None))
-            self._cancel_task(self._grace_tasks.pop(room_id, None))
+            await self._start_voting(room_id, notifier, state)
             return
         next_conn = order[next_index]
         deadline = time.time() + int(state.get("turn_duration", 30))
@@ -348,6 +351,98 @@ class GameService:
             },
         )
         self._start_turn_timer(room_id, notifier)
+
+    async def _start_round(
+        self,
+        room_id: str,
+        notifier: Notifier,
+        round_num: int,
+        order: list[str],
+        turn_duration: int,
+        turn_grace: int,
+        vote_duration: int,
+    ) -> None:
+        if not order:
+            raise RuntimeError("no players in room")
+        turn_index = 0
+        current_conn = order[turn_index]
+        deadline = time.time() + turn_duration
+        await self._store.set_turn_state(
+            room_id,
+            {
+                "phase": "active",
+                "round": round_num,
+                "turn_index": turn_index,
+                "current_conn_id": current_conn,
+                "deadline_ts": deadline,
+                "turn_duration": turn_duration,
+                "turn_grace": turn_grace,
+                "vote_duration": vote_duration,
+            },
+        )
+        conns_set = await self._store.list_conns(room_id)
+        await notifier.broadcast(
+            conns_set,
+            {
+                "type": "round_started",
+                "room_id": room_id,
+                "round": round_num,
+                "order": order,
+                "turn_duration": turn_duration,
+            },
+        )
+        await notifier.broadcast(
+            conns_set,
+            {
+                "type": "turn_started",
+                "room_id": room_id,
+                "round": round_num,
+                "turn_index": turn_index,
+                "conn_id": current_conn,
+                "turn_duration": turn_duration,
+            },
+        )
+        self._start_turn_timer(room_id, notifier)
+
+    async def _start_voting(
+        self, room_id: str, notifier: Notifier, state: dict[str, Any]
+    ) -> None:
+        voters = sorted(await self._store.list_conns(room_id))
+        if not voters:
+            return
+        vote_duration = int(state.get("vote_duration", 60))
+        new_state = {
+            **state,
+            "phase": "voting",
+            "vote_deadline_ts": time.time() + vote_duration,
+            "voters": json.dumps(voters),
+        }
+        new_state.pop("deadline_ts", None)
+        new_state.pop("turn_remaining", None)
+        new_state.pop("grace_deadline_ts", None)
+        await self._store.set_turn_state(room_id, new_state)
+        await self._store.clear_votes(room_id)
+        await notifier.broadcast(
+            voters,
+            {
+                "type": "round_ended",
+                "room_id": room_id,
+                "round": state["round"],
+            },
+        )
+        await notifier.broadcast(
+            voters,
+            {
+                "type": "voting_started",
+                "room_id": room_id,
+                "round": state["round"],
+                "voters": voters,
+                "vote_duration": vote_duration,
+            },
+        )
+        self._cancel_task(self._turn_tasks.pop(room_id, None))
+        self._cancel_task(self._grace_tasks.pop(room_id, None))
+        self._start_voting_timer(room_id, notifier)
 
     async def _pause_turn_if_current(
         self, room_id: str, conn_id: str, notifier: Notifier
@@ -416,3 +511,124 @@ class GameService:
             )
             self._cancel_task(self._grace_tasks.pop(room_id, None))
             self._start_turn_timer(room_id, notifier)
+
+    @room_exists
+    async def cast_vote(
+        self,
+        room_id: str,
+        voter_conn_id: str,
+        target_conn_id: str,
+        notifier: Notifier,
+    ) -> dict[str, Any]:
+        async with self._get_lock(room_id):
+            state = await self._get_turn_state_for_phase(room_id, "voting")
+            if not state:
+                raise RuntimeError("voting is not active")
+            deadline = state.get("vote_deadline_ts")
+            if deadline is not None and time.time() >= deadline:
+                await self._finalize_voting_locked(room_id, notifier, state)
+                raise RuntimeError("voting has ended")
+            voters = self._parse_voters(state)
+            if voter_conn_id not in voters:
+                raise PermissionError("voter is not eligible")
+            if target_conn_id != "skip" and target_conn_id not in voters:
+                raise RuntimeError("invalid vote target")
+            await self._store.set_vote(room_id, voter_conn_id, target_conn_id)
+            votes = await self._store.get_votes(room_id)
+            tally = self._tally_votes(votes, voters)
+            conns = await self._store.list_conns(room_id)
+            await notifier.broadcast(
+                conns,
+                {
+                    "type": "vote_cast",
+                    "room_id": room_id,
+                    "round": state.get("round"),
+                    "voter": voter_conn_id,
+                    "target": target_conn_id,
+                    "votes": votes,
+                    "tally": tally,
+                },
+            )
+            if len(voters) > 0 and len(votes) >= len(voters):
+                await self._finalize_voting_locked(room_id, notifier, state)
+            return {"votes": votes, "tally": tally}
+
+    async def _finalize_voting_locked(
+        self, room_id: str, notifier: Notifier, state: dict[str, Any]
+    ) -> None:
+        task = self._voting_tasks.pop(room_id, None)
+        if task and task is not asyncio.current_task():
+            self._cancel_task(task)
+        votes = await self._store.get_votes(room_id)
+        voters = self._parse_voters(state)
+        tally = self._tally_votes(votes, voters)
+        total_voters = len(voters)
+        majority_needed = total_voters // 2 + 1 if total_voters else 0
+        winner: str | None = None
+        for target, count in tally.items():
+            if target in voters and count >= majority_needed:
+                winner = target
+                break
+        conns = await self._store.list_conns(room_id)
+        if winner:
+            impostor = await self._store.get_impostor(room_id)
+            winner_team = "crew" if winner == impostor else "impostor"
+            result = {
+                "winner": winner_team,
+                "reason": "majority_vote",
+                "voted_out": winner,
+                "impostor": impostor,
+                "tally": tally,
+                "votes": votes,
+            }
+            await notifier.broadcast(
+                conns,
+                {
+                    "type": "voting_result",
+                    "room_id": room_id,
+                    "round": state.get("round"),
+                    "result": result,
+                },
+            )
+            await self.end_game(room_id, notifier, result=result)
+            return
+        await notifier.broadcast(
+            conns,
+            {
+                "type": "voting_result",
+                "room_id": room_id,
+                "round": state.get("round"),
+                "result": {
+                    "winner": None,
+                    "reason": "no_majority",
+                    "tally": tally,
+                    "votes": votes,
+                },
+            },
+        )
+        await self._store.clear_votes(room_id)
+        await self._start_next_round(room_id, notifier, state)
+
+    async def _start_next_round(
+        self, room_id: str, notifier: Notifier, state: dict[str, Any]
+    ) -> None:
+        conns = list(await self._store.list_conns(room_id))
+        if not conns:
+            return
+        order = conns[:]
+        secrets.SystemRandom().shuffle(order)
+        await self._store.set_turn_order(room_id, order)
+        await self._store.clear_votes(room_id)
+        round_num = int(state.get("round", 1)) + 1
+        turn_duration = int(state.get("turn_duration", 30))
+        turn_grace = int(state.get("turn_grace", 60))
+        vote_duration = int(state.get("vote_duration", 60))
+        await self._start_round(
+            room_id,
+            notifier,
+            round_num,
+            order,
+            turn_duration,
+            turn_grace,
+            vote_duration,
+        )

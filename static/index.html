@@ -60,6 +60,21 @@
           <h3>Game</h3>
           <p>Role: <span id="role-value">unknown</span></p>
           <p>Secret word: <span id="word-value">unknown</span></p>
+
+          <section id="screen-voting" hidden>
+            <h4>Voting</h4>
+            <p id="voting-status"></p>
+            <label>
+              Vote target
+              <select id="vote-target"></select>
+            </label>
+            <button id="vote-btn" type="button">Cast vote</button>
+            <h5>Votes</h5>
+            <ul id="vote-list"></ul>
+            <h5>Tally</h5>
+            <ul id="vote-tally"></ul>
+            <p id="voting-result"></p>
+          </section>
         </section>
 
         <h3>Chat</h3>

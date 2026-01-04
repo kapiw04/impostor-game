@@ -121,6 +121,7 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2"})
     store.clear_roles = mocker.AsyncMock()
     store.clear_turn_state = mocker.AsyncMock()
+    store.clear_votes = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     service = GameService(store)
@@ -136,6 +137,7 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
     )
     store.clear_roles.assert_awaited_once_with("room-1")
     store.clear_turn_state.assert_awaited_once_with("room-1")
+    store.clear_votes.assert_awaited_once_with("room-1")
 
 
 async def test_disconnect_removes_conn_and_returns_resume_token(

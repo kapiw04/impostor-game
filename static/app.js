@@ -14,6 +14,11 @@
     pendingResumeToken: "",
     awaitingWelcome: false,
     readyBusy: false,
+    votingActive: false,
+    voters: [],
+    votes: {},
+    tally: {},
+    lastVotingResult: null,
   };
 
   function setStatus(message) {
@@ -59,6 +64,7 @@
     $("start-game-btn").hidden = !isHost;
     $("start-game-btn").disabled = !allReady;
     $("end-game-btn").hidden = !isHost;
+    renderVoting();
   }
 
   function updateRole(role, word) {
@@ -67,6 +73,98 @@
     $("role-value").textContent = role || "unknown";
     $("word-value").textContent = word || "unknown";
     $("screen-game").hidden = !role;
+    renderVoting();
+  }
+
+  function getNickByConn(connId) {
+    const players = (state.lobby && state.lobby.players) || {};
+    const player = players[connId];
+    if (player && player.nick) {
+      return player.nick;
+    }
+    return connId;
+  }
+
+  function formatVoteTarget(target) {
+    if (target === "skip") {
+      return "Skip";
+    }
+    return getNickByConn(target);
+  }
+
+  function renderVoting() {
+    const section = $("screen-voting");
+    if (!section) {
+      return;
+    }
+    const active = state.votingActive;
+    const result = state.lastVotingResult;
+    section.hidden = !active && !result;
+
+    const voters = state.voters || [];
+    const canVote = active && voters.includes(state.connId);
+    const statusEl = $("voting-status");
+    if (active) {
+      statusEl.textContent = canVote
+        ? "Voting in progress."
+        : "Voting in progress (not eligible).";
+    } else if (result) {
+      statusEl.textContent = "Voting ended.";
+    } else {
+      statusEl.textContent = "";
+    }
+
+    const targetSelect = $("vote-target");
+    targetSelect.innerHTML = "";
+    if (voters.length) {
+      const skipOption = document.createElement("option");
+      skipOption.value = "skip";
+      skipOption.textContent = "Skip";
+      targetSelect.appendChild(skipOption);
+      voters.forEach((connId) => {
+        const option = document.createElement("option");
+        option.value = connId;
+        option.textContent = getNickByConn(connId);
+        targetSelect.appendChild(option);
+      });
+    }
+    targetSelect.disabled = !canVote;
+    $("vote-btn").disabled = !canVote;
+
+    const voteList = $("vote-list");
+    voteList.innerHTML = "";
+    Object.keys(state.votes || {})
+      .sort()
+      .forEach((voter) => {
+        const li = document.createElement("li");
+        li.textContent = `${getNickByConn(voter)} -> ${formatVoteTarget(
+          state.votes[voter]
+        )}`;
+        voteList.appendChild(li);
+      });
+
+    const tallyList = $("vote-tally");
+    tallyList.innerHTML = "";
+    Object.keys(state.tally || {})
+      .sort()
+      .forEach((target) => {
+        const li = document.createElement("li");
+        li.textContent = `${formatVoteTarget(target)}: ${state.tally[target]}`;
+        tallyList.appendChild(li);
+      });
+
+    const resultEl = $("voting-result");
+    if (result) {
+      if (result.winner) {
+        resultEl.textContent = `Voted out: ${formatVoteTarget(
+          result.voted_out
+        )}. Winner: ${result.winner}.`;
+      } else {
+        resultEl.textContent = "No majority. New round starting.";
+      }
+    } else {
+      resultEl.textContent = "";
+    }
   }
 
   function saveResume(token, roomId) {
@@ -181,6 +279,32 @@
         }
       }
 
+      if (payload.type === "round_started") {
+        state.lastVotingResult = null;
+        renderVoting();
+      }
+
+      if (payload.type === "voting_started") {
+        state.votingActive = true;
+        state.voters = payload.voters || [];
+        state.votes = {};
+        state.tally = {};
+        state.lastVotingResult = null;
+        renderVoting();
+      }
+
+      if (payload.type === "vote_cast") {
+        state.votes = payload.votes || {};
+        state.tally = payload.tally || {};
+        renderVoting();
+      }
+
+      if (payload.type === "voting_result") {
+        state.votingActive = false;
+        state.lastVotingResult = payload.result || null;
+        renderVoting();
+      }
+
       if (payload.type === "msg") {
         const li = document.createElement("li");
         li.textContent = `${payload.nick}: ${payload.text}`;
@@ -197,6 +321,12 @@
       } else {
         setStatus("Disconnected.");
       }
+      state.votingActive = false;
+      state.voters = [];
+      state.votes = {};
+      state.tally = {};
+      state.lastVotingResult = null;
+      renderVoting();
       setScreen("setup");
     };
 
@@ -266,9 +396,35 @@
         result: null,
       });
       updateRole(null, null);
+      state.votingActive = false;
+      state.voters = [];
+      state.votes = {};
+      state.tally = {};
+      state.lastVotingResult = null;
+      renderVoting();
       setStatus("Game ended.");
     } catch (err) {
       setStatus("End game failed: " + err.message);
+    }
+  });
+
+  $("vote-btn").addEventListener("click", async () => {
+    if (!state.votingActive) {
+      return;
+    }
+    const target = $("vote-target").value;
+    if (!target) {
+      setStatus("Select a vote target.");
+      return;
+    }
+    try {
+      await api(`/rooms/${encodeURIComponent(state.roomId)}/vote`, "POST", {
+        conn_id: state.connId,
+        target_conn_id: target,
+      });
+      setStatus("Vote cast.");
+    } catch (err) {
+      setStatus("Vote failed: " + err.message);
     }
   });
 
