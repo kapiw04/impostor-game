@@ -35,6 +35,11 @@ class RoomService:
         room_name = await self._store.get_room_name(room_id)
         if room_name is None:
             raise RoomNotFoundError(room_id)
+        settings = await self._store.get_room_settings(room_id)
+        max_players = int(settings.get("max_players", 0) or 0)
+        conns = await self._store.list_conns(room_id)
+        if max_players and len(conns) >= max_players:
+            raise RuntimeError("room is full")
 
         await self._store.add_conn(room_id, conn_id, nickname=nickname)
         conns = await self._store.list_conns(room_id)
@@ -65,6 +70,59 @@ class RoomService:
         token = await self._store.issue_resume_token(room_id, conn_id)
         await self._store.remove_conn(room_id, conn_id)
         return token
+
+    @room_exists
+    async def set_nickname(
+        self, room_id: str, conn_id: str, nickname: str
+    ) -> dict[str, Any]:
+        nickname = nickname.strip()
+        if not nickname:
+            raise RuntimeError("nickname is required")
+        conns = await self._store.list_conns(room_id)
+        if conn_id not in conns:
+            raise PermissionError("player not in room")
+        await self._store.set_nickname(room_id, conn_id, nickname)
+        state = await self._store.get_lobby_state(room_id)
+        if state is None:
+            raise RoomNotFoundError(room_id)
+        return state
+
+    @room_exists
+    async def update_settings(
+        self, room_id: str, conn_id: str, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        state = await self._store.get_lobby_state(room_id)
+        if state is None:
+            raise RoomNotFoundError(room_id)
+        if state.get("host") != conn_id:
+            raise PermissionError("only host can update settings")
+        if not settings:
+            return state
+        await self._store.set_room_settings(room_id, settings)
+        state = await self._store.get_lobby_state(room_id)
+        if state is None:
+            raise RoomNotFoundError(room_id)
+        return state
+
+    @room_exists
+    async def kick_player(
+        self, room_id: str, conn_id: str, target_conn_id: str
+    ) -> dict[str, Any]:
+        state = await self._store.get_lobby_state(room_id)
+        if state is None:
+            raise RoomNotFoundError(room_id)
+        if state.get("host") != conn_id:
+            raise PermissionError("only host can kick players")
+        if target_conn_id == conn_id:
+            raise PermissionError("cannot kick host")
+        conns = await self._store.list_conns(room_id)
+        if target_conn_id not in conns:
+            raise RuntimeError("player not in room")
+        await self._store.remove_conn(room_id, target_conn_id)
+        state = await self._store.get_lobby_state(room_id)
+        if state is None:
+            raise RoomNotFoundError(room_id)
+        return state
 
     async def preview_reconnect(self, token: str) -> dict[str, Any]:
         resume = await self._store.peek_resume_token(token)

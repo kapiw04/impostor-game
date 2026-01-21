@@ -55,6 +55,12 @@ class RedisRoomStore:
     def _turn_state_key(self, room_id: str) -> str:
         return f"room:{room_id}:turn_state"
 
+    def _turn_words_key(self, room_id: str) -> str:
+        return f"room:{room_id}:turn_words"
+
+    def _word_history_key(self, room_id: str) -> str:
+        return f"room:{room_id}:word_history"
+
     def _conn_key(self, conn_id: str) -> str:
         return f"conn:{conn_id}"
 
@@ -83,6 +89,14 @@ class RedisRoomStore:
             mapping["nickname"] = nickname
         await _await(self._r.hset(self._conn_key(conn_id), mapping=mapping))
         await _await(self._r.setnx(self._room_host_key(room_id), conn_id))
+
+    async def set_nickname(
+        self, room_id: str, conn_id: str, nickname: str
+    ) -> None:
+        del room_id
+        await _await(
+            self._r.hset(self._conn_key(conn_id), mapping={"nickname": nickname})
+        )
 
     async def remove_conn(self, room_id: str, conn_id: str) -> None:
         await _await(self._r.srem(self._room_conns_key(room_id), conn_id))
@@ -119,13 +133,7 @@ class RedisRoomStore:
                 "ready": data.get("ready") == "1",
             }
         host = await _await(self._r.get(self._room_host_key(room_id)))
-        raw_settings = await _await(self._r.hgetall(self._room_settings_key(room_id)))
-        settings: dict[str, Any] = {**self._default_settings}
-        for key, value in raw_settings.items():
-            if value.isdigit():
-                settings[key] = int(value)
-            else:
-                settings[key] = value
+        settings = await self.get_room_settings(room_id)
         return {
             "room_id": room_id,
             "name": room_name,
@@ -148,6 +156,20 @@ class RedisRoomStore:
         await self.set_game_state(room_id, "ended")
         await _await(self._r.set(self._room_result_key(room_id), json.dumps(result)))
         return result
+
+    async def get_room_settings(self, room_id: str) -> dict[str, Any]:
+        raw_settings = await _await(self._r.hgetall(self._room_settings_key(room_id)))
+        settings: dict[str, Any] = {**self._default_settings}
+        for key, value in raw_settings.items():
+            if value.isdigit():
+                settings[key] = int(value)
+            else:
+                settings[key] = value
+        return settings
+
+    async def set_room_settings(self, room_id: str, settings: dict[str, Any]) -> None:
+        mapping = {key: str(value) for key, value in settings.items()}
+        await _await(self._r.hset(self._room_settings_key(room_id), mapping=mapping))
 
     async def set_secret_word(self, room_id: str, word: str) -> None:
         await _await(self._r.set(self._room_word_key(room_id), word))
@@ -212,6 +234,46 @@ class RedisRoomStore:
         await _await(self._r.delete(self._turn_state_key(room_id)))
         await _await(self._r.delete(self._turn_order_key(room_id)))
         await _await(self._r.delete(self._room_votes_key(room_id)))
+
+    async def append_turn_word(self, room_id: str, entry: dict[str, Any]) -> None:
+        await _await(
+            self._r.rpush(self._turn_words_key(room_id), json.dumps(entry))
+        )
+
+    async def get_turn_words(self, room_id: str) -> list[dict[str, Any]]:
+        raw = await _await(self._r.lrange(self._turn_words_key(room_id), 0, -1))
+        words: list[dict[str, Any]] = []
+        for item in raw:
+            try:
+                parsed = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                words.append(parsed)
+        return words
+
+    async def clear_turn_words(self, room_id: str) -> None:
+        await _await(self._r.delete(self._turn_words_key(room_id)))
+
+    async def append_word_history(self, room_id: str, entry: dict[str, Any]) -> None:
+        await _await(
+            self._r.rpush(self._word_history_key(room_id), json.dumps(entry))
+        )
+
+    async def get_word_history(self, room_id: str) -> list[dict[str, Any]]:
+        raw = await _await(self._r.lrange(self._word_history_key(room_id), 0, -1))
+        history: list[dict[str, Any]] = []
+        for item in raw:
+            try:
+                parsed = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                history.append(parsed)
+        return history
+
+    async def clear_word_history(self, room_id: str) -> None:
+        await _await(self._r.delete(self._word_history_key(room_id)))
 
     async def set_vote(
         self, room_id: str, voter_conn_id: str, target_conn_id: str

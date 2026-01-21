@@ -19,8 +19,16 @@ class WSManager:
     async def send_to_conn(self, conn_id: str, payload: dict[str, Any]) -> None:
         ws = self._by_id.get(conn_id)
         if ws:
-            await ws.send_json(payload)
+            try:
+                await ws.send_json(payload)
+            except RuntimeError:
+                self._by_id.pop(conn_id, None)
 
     async def broadcast(self, conn_ids: Iterable[str], payload: dict[str, Any]) -> None:
         for cid in conn_ids:
             await self.send_to_conn(cid, payload)
+
+    async def close_conn(self, conn_id: str) -> None:
+        ws = self._by_id.pop(conn_id, None)
+        if ws:
+            await ws.close()

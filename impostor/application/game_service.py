@@ -40,6 +40,9 @@ class GameService:
         if task and not task.done():
             task.cancel()
 
+    def _normalize_guess(self, value: str) -> str:
+        return " ".join(value.strip().casefold().split())
+
     def _parse_voters(self, state: dict[str, Any]) -> list[str]:
         raw = state.get("voters")
         if not raw:
@@ -93,6 +96,7 @@ class GameService:
         if not players or any(not player.get("ready") for player in players):
             raise RuntimeError("all players must be ready")
         await self._store.set_game_state(room_id, "in_progress")
+        await self._store.clear_word_history(room_id)
         await self.assign_roles(room_id, notifier)
         conns = await self._store.list_conns(room_id)
         await notifier.broadcast(conns, {"type": "game_started", "room_id": room_id})
@@ -111,9 +115,19 @@ class GameService:
             conns,
             {"type": "game_ended", "room_id": room_id, "result": result},
         )
+        for conn_id in conns:
+            await self._store.set_ready(room_id, conn_id, False)
+        lobby_state = await self._store.get_lobby_state(room_id)
+        if lobby_state:
+            await notifier.broadcast(
+                conns,
+                {"type": "lobby_state", "room_id": room_id, "state": lobby_state},
+            )
         await self._store.clear_roles(room_id)
         await self._store.clear_turn_state(room_id)
         await self._store.clear_votes(room_id)
+        await self._store.clear_turn_words(room_id)
+        await self._store.clear_word_history(room_id)
         self._cancel_task(self._turn_tasks.pop(room_id, None))
         self._cancel_task(self._grace_tasks.pop(room_id, None))
         self._cancel_task(self._voting_tasks.pop(room_id, None))
@@ -179,6 +193,49 @@ class GameService:
             await self._advance_turn_locked(
                 room_id, notifier, state, TurnEndReason.SPOKEN
             )
+
+    @room_exists
+    async def submit_turn_word(
+        self,
+        room_id: str,
+        conn_id: str,
+        word: str,
+        notifier: Notifier,
+    ) -> dict[str, Any]:
+        cleaned_word = word.strip()
+        if not cleaned_word:
+            raise RuntimeError("word is required")
+        async with self._get_lock(room_id):
+            state = await self._get_turn_state_for_phase(room_id, "active")
+            if not state:
+                raise RuntimeError("turn is not active")
+            if not self._is_current_conn(state, conn_id):
+                raise PermissionError("not your turn")
+            entry = {
+                "word": cleaned_word,
+                "conn_id": conn_id,
+                "round": state["round"],
+                "turn_index": state["turn_index"],
+            }
+            await self._store.append_turn_word(room_id, entry)
+            await self._store.append_word_history(room_id, entry)
+            conns = await self._store.list_conns(room_id)
+            await notifier.broadcast(
+                conns,
+                {
+                    "type": "turn_word_submitted",
+                    "room_id": room_id,
+                    **entry,
+                },
+            )
+            await self._advance_turn_locked(
+                room_id, notifier, state, TurnEndReason.SPOKEN
+            )
+            return {
+                "word": cleaned_word,
+                "round": state["round"],
+                "turn_index": state["turn_index"],
+            }
 
     async def _start_rounds(
         self, room_id: str, notifier: Notifier, lobby_state: dict[str, Any]
@@ -283,7 +340,8 @@ class GameService:
             deadline = state.get("vote_deadline_ts")
             if deadline is None:
                 return
-            if time.time() >= deadline:
+            remaining = int(deadline - time.time())
+            if remaining <= 0:
                 async with self._get_lock(room_id):
                     state = await self._get_turn_state_for_phase(room_id, "voting")
                     if not state:
@@ -291,6 +349,18 @@ class GameService:
                     await self._finalize_voting_locked(room_id, notifier, state)
                 self._voting_tasks.pop(room_id, None)
                 return
+            conns = await self._store.list_conns(room_id)
+            await notifier.broadcast(
+                conns,
+                {
+                    "type": "turn_timer",
+                    "room_id": room_id,
+                    "round": state["round"],
+                    "turn_index": state["turn_index"],
+                    "remaining": remaining,
+                    "phase": "voting",
+                },
+            )
             await asyncio.sleep(self._timer_tick_seconds)
 
     async def _advance_turn(
@@ -364,6 +434,7 @@ class GameService:
     ) -> None:
         if not order:
             raise RuntimeError("no players in room")
+        await self._store.clear_turn_words(room_id)
         turn_index = 0
         current_conn = order[turn_index]
         deadline = time.time() + turn_duration
@@ -403,6 +474,44 @@ class GameService:
             },
         )
         self._start_turn_timer(room_id, notifier)
+
+    @room_exists
+    async def get_turn_snapshot(self, room_id: str) -> dict[str, Any] | None:
+        state = await self._store.get_turn_state(room_id)
+        if not state:
+            return None
+        order = await self._store.get_turn_order(room_id)
+        words = await self._store.get_turn_words(room_id)
+        history = await self._store.get_word_history(room_id)
+        snapshot = {
+            **state,
+            "order": order,
+            "words": words,
+            "history": history,
+        }
+        remaining = None
+        now = time.time()
+        phase = state.get("phase")
+        if phase == "active":
+            deadline = state.get("deadline_ts")
+            if deadline is not None:
+                remaining = max(0, int(deadline - now))
+        elif phase == "paused":
+            grace_deadline = state.get("grace_deadline_ts")
+            if grace_deadline is not None:
+                remaining = max(0, int(grace_deadline - now))
+        elif phase == "voting":
+            vote_deadline = state.get("vote_deadline_ts")
+            if vote_deadline is not None:
+                remaining = max(0, int(vote_deadline - now))
+            voters = self._parse_voters(state)
+            votes = await self._store.get_votes(room_id)
+            snapshot["voters"] = voters
+            snapshot["votes"] = votes
+            snapshot["tally"] = self._tally_votes(votes, voters)
+        if remaining is not None:
+            snapshot["remaining"] = remaining
+        return snapshot
 
     async def _start_voting(
         self, room_id: str, notifier: Notifier, state: dict[str, Any]
@@ -533,6 +642,9 @@ class GameService:
                 raise PermissionError("voter is not eligible")
             if target_conn_id != "skip" and target_conn_id not in voters:
                 raise RuntimeError("invalid vote target")
+            votes = await self._store.get_votes(room_id)
+            if voter_conn_id in votes:
+                raise RuntimeError("vote already cast")
             await self._store.set_vote(room_id, voter_conn_id, target_conn_id)
             votes = await self._store.get_votes(room_id)
             tally = self._tally_votes(votes, voters)
@@ -553,6 +665,38 @@ class GameService:
                 await self._finalize_voting_locked(room_id, notifier, state)
             return {"votes": votes, "tally": tally}
 
+    @room_exists
+    async def guess_word(
+        self,
+        room_id: str,
+        conn_id: str,
+        guess: str,
+        notifier: Notifier,
+    ) -> dict[str, Any]:
+        impostor = await self._store.get_impostor(room_id)
+        if impostor is None:
+            raise RuntimeError("impostor is not set")
+        if impostor != conn_id:
+            raise PermissionError("only impostor can guess the word")
+        word = await self._store.get_secret_word(room_id)
+        if not word:
+            raise RuntimeError("secret word is not set")
+        cleaned_guess = guess.strip()
+        if not cleaned_guess:
+            raise RuntimeError("guess is required")
+        normalized_guess = self._normalize_guess(cleaned_guess)
+        normalized_word = self._normalize_guess(word)
+        correct = normalized_guess == normalized_word
+        result = {
+            "winner": "impostor" if correct else "crew",
+            "reason": "impostor_guessed" if correct else "impostor_failed_guess",
+            "impostor": impostor,
+            "guess": cleaned_guess,
+            "word": word,
+        }
+        await self.end_game(room_id, notifier, result=result)
+        return result
+
     async def _finalize_voting_locked(
         self, room_id: str, notifier: Notifier, state: dict[str, Any]
     ) -> None:
@@ -572,12 +716,14 @@ class GameService:
         conns = await self._store.list_conns(room_id)
         if winner:
             impostor = await self._store.get_impostor(room_id)
-            winner_team = "crew" if winner == impostor else "impostor"
+            word = await self._store.get_secret_word(room_id)
+            crew_wins = winner == impostor
             result = {
-                "winner": winner_team,
-                "reason": "majority_vote",
+                "winner": "crew" if crew_wins else "impostor",
+                "reason": "impostor_eliminated" if crew_wins else "crew_eliminated",
                 "voted_out": winner,
                 "impostor": impostor,
+                "word": word,
                 "tally": tally,
                 "votes": votes,
             }
@@ -612,12 +758,9 @@ class GameService:
     async def _start_next_round(
         self, room_id: str, notifier: Notifier, state: dict[str, Any]
     ) -> None:
-        conns = list(await self._store.list_conns(room_id))
-        if not conns:
+        order = await self._store.get_turn_order(room_id)
+        if not order:
             return
-        order = conns[:]
-        secrets.SystemRandom().shuffle(order)
-        await self._store.set_turn_order(room_id, order)
         await self._store.clear_votes(room_id)
         round_num = int(state.get("round", 1)) + 1
         turn_duration = int(state.get("turn_duration", 30))

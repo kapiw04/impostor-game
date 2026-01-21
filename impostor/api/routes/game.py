@@ -35,6 +35,24 @@ class VoteOut(BaseModel):
     tally: dict[str, int]
 
 
+class GuessIn(BaseModel):
+    conn_id: str
+    guess: str
+
+
+class GuessOut(BaseModel):
+    result: dict[str, Any]
+
+
+class TurnWordIn(BaseModel):
+    conn_id: str
+    word: str
+
+
+class TurnWordOut(BaseModel):
+    status: str
+
+
 @game_router.post("/{room_id}/start", response_model=StatusOut)
 async def start_game(
     room_id: str,
@@ -69,6 +87,29 @@ async def end_game(
     return EndGameOut(result=result)
 
 
+@game_router.post("/{room_id}/guess", response_model=GuessOut)
+async def guess_word(
+    room_id: str,
+    guess_in: GuessIn,
+    game_service: GameServiceDep,
+    ws_manager: WSManagerDep,
+):
+    try:
+        result = await game_service.guess_word(
+            room_id=room_id,
+            conn_id=guess_in.conn_id,
+            guess=guess_in.guess,
+            notifier=ws_manager,
+        )
+    except RoomNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return GuessOut(result=result)
+
+
 @game_router.post("/{room_id}/vote", response_model=VoteOut)
 async def cast_vote(
     room_id: str,
@@ -90,3 +131,26 @@ async def cast_vote(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return VoteOut(votes=result["votes"], tally=result["tally"])
+
+
+@game_router.post("/{room_id}/turn-word", response_model=TurnWordOut)
+async def submit_turn_word(
+    room_id: str,
+    turn_in: TurnWordIn,
+    game_service: GameServiceDep,
+    ws_manager: WSManagerDep,
+):
+    try:
+        await game_service.submit_turn_word(
+            room_id=room_id,
+            conn_id=turn_in.conn_id,
+            word=turn_in.word,
+            notifier=ws_manager,
+        )
+    except RoomNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return TurnWordOut(status="submitted")

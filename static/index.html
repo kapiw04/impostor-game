@@ -4,93 +4,211 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Impostor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main>
-      <h1>Impostor</h1>
-      <p id="status"></p>
+    <header class="topbar">
+      <button id="aim-btn" class="aim-btn" type="button" hidden>GUESS</button>
+      <div class="brand">
+        <h1>Impostor</h1>
+      </div>
+      <div id="role-banner" class="role-banner" hidden></div>
+    </header>
 
-      <section id="screen-setup">
-        <h2>Start</h2>
-        <section>
-          <h3>Create room</h3>
-          <label>
-            Room name
-            <input id="create-room-name" type="text" />
-          </label>
-          <button id="create-room-btn" type="button">Create room</button>
-          <p>New room ID: <span id="created-room-id"></span></p>
-        </section>
+    <div class="status-bar">
+      <span id="status"></span>
+    </div>
 
-        <section>
-          <h3>Join room</h3>
-          <label>
-            Room ID
-            <input id="join-room-id" type="text" />
-          </label>
-          <label>
-            Nickname
-            <input id="join-nick" type="text" />
-          </label>
-          <button id="join-room-btn" type="button">Join room</button>
-        </section>
+    <main class="shell">
+      <section id="screen-setup" class="screen">
+        <div class="screen-title">
+          <h2 id="setup-title">START [MENU]</h2>
+          <p class="muted">Create a room or join with an ID.</p>
+        </div>
+        <div class="grid two">
+          <section class="card">
+            <h3>CREATE [ROOM]</h3>
+            <label>
+              Room name
+              <input id="create-room-name" type="text" placeholder="Room name" />
+            </label>
+            <div class="inline-actions">
+              <button id="create-room-btn" type="button">Create room</button>
+            </div>
+            <p class="muted">New room ID: <span id="created-room-id"></span></p>
+          </section>
+
+          <section class="card">
+            <h3>JOIN [ROOM]</h3>
+            <label>
+              Room ID
+              <input id="join-room-id" type="text" placeholder="Room ID" />
+            </label>
+            <div class="inline-actions">
+              <button id="join-room-btn" type="button">Join room</button>
+            </div>
+          </section>
+        </div>
       </section>
 
-      <section id="screen-lobby" hidden>
-        <h2>Lobby</h2>
-        <p>
-          Room: <span id="lobby-room-name"></span>
-          (<span id="lobby-room-id"></span>)
-        </p>
+      <section id="screen-nick" class="screen" hidden>
+        <div class="screen-title">
+          <h2 id="nick-title">NICKNAME [ROOM]</h2>
+          <p class="muted">Set the name the room will see.</p>
+        </div>
+        <div class="card">
+          <p class="muted">Room ID: <span id="nick-room-id"></span></p>
+          <label>
+            Nickname
+            <input id="nick-input" type="text" maxlength="20" placeholder="Your nickname" />
+          </label>
+          <div class="inline-actions">
+            <button id="nick-save-btn" type="button">Save nickname</button>
+          </div>
+        </div>
+      </section>
 
-        <h3>Players</h3>
-        <ul id="players-list"></ul>
-
-        <label>
-          Ready
-          <input id="ready-flag" type="checkbox" />
-        </label>
-
-        <div>
-          <button id="start-game-btn" type="button">Start game</button>
-          <button id="end-game-btn" type="button">End game</button>
+      <section id="screen-lobby" class="screen" hidden>
+        <div class="screen-title">
+          <h2 id="lobby-title">ROOM [ID]</h2>
+          <p class="muted">NAME: <span id="lobby-room-name"></span></p>
         </div>
 
-        <section id="screen-game" hidden>
-          <h3>Game</h3>
-          <p>Role: <span id="role-value">unknown</span></p>
-          <p>Secret word: <span id="word-value">unknown</span></p>
-
-          <section id="screen-voting" hidden>
-            <h4>Voting</h4>
-            <p id="voting-status"></p>
-            <label>
-              Vote target
-              <select id="vote-target"></select>
-            </label>
-            <button id="vote-btn" type="button">Cast vote</button>
-            <h5>Votes</h5>
-            <ul id="vote-list"></ul>
-            <h5>Tally</h5>
-            <ul id="vote-tally"></ul>
-            <p id="voting-result"></p>
+        <div class="grid two">
+          <section class="card">
+            <h3>PLAYERS [ROOM]</h3>
+            <ul id="players-list" class="players-list"></ul>
+            <div class="inline-actions">
+              <button id="ready-btn" type="button">Ready up</button>
+            </div>
           </section>
-        </section>
 
-        <h3>Chat</h3>
-        <ul id="chat-log"></ul>
-        <label>
-          Message
-          <input id="chat-text" type="text" />
-        </label>
-        <button id="chat-send-btn" type="button">Send</button>
+          <section id="host-controls" class="card" hidden>
+            <h3>SETTINGS [HOST]</h3>
+            <div class="settings-grid">
+              <label>
+                Max players
+                <input id="setting-max-players" type="number" min="2" max="20" />
+              </label>
+              <label>
+                Turn time (sec)
+                <input id="setting-turn-duration" type="number" min="5" max="300" />
+              </label>
+              <label>
+                Vote time (sec)
+                <input id="setting-vote-duration" type="number" min="10" max="300" />
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button id="settings-save-btn" type="button">Save settings</button>
+              <button id="start-game-btn" type="button">Start game</button>
+            </div>
+          </section>
+        </div>
+      </section>
 
-        <div>
-          <button id="leave-btn" type="button">Leave room</button>
+      <section id="screen-game" class="screen" hidden>
+        <div class="screen-title">
+          <h2 id="game-title">ROUND [--]</h2>
+          <p id="turn-meta" class="muted"></p>
+        </div>
+        <div class="grid two">
+          <section class="card">
+            <h3>WORDS [ROUND]</h3>
+            <ul id="round-words" class="word-list"></ul>
+          </section>
+          <section class="card">
+            <h3>INPUT [TURN]</h3>
+            <p id="turn-status"></p>
+            <p id="turn-timer" class="muted"></p>
+            <div id="turn-input" class="turn-input">
+              <label>
+                Your word
+                <input id="turn-word" type="text" maxlength="32" />
+              </label>
+              <div class="inline-actions">
+                <button id="turn-submit-btn" type="button">Submit word</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="screen-voting" class="screen" hidden>
+        <div class="screen-title">
+          <h2 id="voting-title">VOTING [ROUND --]</h2>
+          <p id="voting-status" class="muted"></p>
+        </div>
+        <div class="card">
+          <p id="voting-timer" class="muted"></p>
+          <div id="vote-buttons" class="vote-buttons"></div>
+        </div>
+        <div class="card">
+          <h3>WORDS [LOG]</h3>
+          <ul id="word-history" class="word-history"></ul>
+        </div>
+      </section>
+
+      <section id="screen-end" class="screen" hidden>
+        <div class="screen-title">
+          <h2 id="end-title">GAME OVER [RESULT]</h2>
+          <p id="end-outcome" class="end-outcome"></p>
+        </div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Winner</div>
+            <div class="summary-value" id="end-winner"></div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Reason</div>
+            <div class="summary-value" id="end-reason"></div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Impostor</div>
+            <div class="summary-value" id="end-impostor"></div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Secret word</div>
+            <div class="summary-value" id="end-word"></div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Voted out</div>
+            <div class="summary-value" id="end-voted-out"></div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Final guess</div>
+            <div class="summary-value" id="end-guess"></div>
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button id="end-back-btn" type="button">Back to lobby</button>
         </div>
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <div id="role-flash" class="role-flash" hidden>
+      <div class="role-flash-card">
+        <p id="role-flash-text"></p>
+      </div>
+    </div>
+
+    <div id="aim-modal" class="modal" hidden>
+      <div class="modal-card">
+        <h3>Aim your guess</h3>
+        <p class="muted">If you are wrong, the crew wins instantly.</p>
+        <label>
+          Guess
+          <input id="aim-guess-word" type="text" />
+        </label>
+        <div class="inline-actions">
+          <button id="aim-submit-btn" type="button">Submit guess</button>
+          <button id="aim-cancel-btn" class="button-outline" type="button">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/static/main.js"></script>
   </body>
 </html>

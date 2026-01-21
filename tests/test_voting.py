@@ -22,7 +22,9 @@ async def test_cast_vote_broadcasts_tally(mocker: MockerFixture):
         }
     )
     store.set_vote = mocker.AsyncMock()
-    store.get_votes = mocker.AsyncMock(return_value={"conn-1": "conn-2"})
+    store.get_votes = mocker.AsyncMock(
+        side_effect=[{}, {"conn-1": "conn-2"}]
+    )
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2", "conn-3"})
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
@@ -53,6 +55,7 @@ async def test_cast_vote_rejects_invalid_target(mocker: MockerFixture):
         }
     )
     store.set_vote = mocker.AsyncMock()
+    store.get_votes = mocker.AsyncMock(return_value={})
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     service = GameService(store)
@@ -75,6 +78,7 @@ async def test_cast_vote_rejects_ineligible_voter(mocker: MockerFixture):
         }
     )
     store.set_vote = mocker.AsyncMock()
+    store.get_votes = mocker.AsyncMock(return_value={})
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     service = GameService(store)
@@ -92,6 +96,7 @@ async def test_finalize_voting_majority_ends_game(mocker: MockerFixture):
     )
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2", "conn-3"})
     store.get_impostor = mocker.AsyncMock(return_value="conn-2")
+    store.get_secret_word = mocker.AsyncMock(return_value="banana")
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     service = GameService(store)
@@ -109,6 +114,31 @@ async def test_finalize_voting_majority_ends_game(mocker: MockerFixture):
     service.end_game.assert_awaited_once()
     end_result = service.end_game.await_args.kwargs["result"]
     assert end_result["winner"] == "crew"
+
+
+async def test_finalize_voting_wrong_majority_ends_game(mocker: MockerFixture):
+    store = mocker.Mock()
+    store.get_votes = mocker.AsyncMock(
+        return_value={"conn-1": "conn-3", "conn-2": "conn-3"}
+    )
+    store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2", "conn-3"})
+    store.get_impostor = mocker.AsyncMock(return_value="conn-2")
+    store.get_secret_word = mocker.AsyncMock(return_value="banana")
+    notifier = mocker.Mock()
+    notifier.broadcast = mocker.AsyncMock()
+    service = GameService(store)
+    service.end_game = mocker.AsyncMock()
+    state = {"round": 2, "voters": json.dumps(["conn-1", "conn-2", "conn-3"])}
+
+    await service._finalize_voting_locked("room-1", notifier, state)
+
+    payload = notifier.broadcast.await_args.args[1]
+    assert payload["type"] == "voting_result"
+    assert payload["result"]["reason"] == "crew_eliminated"
+    assert payload["result"]["winner"] == "impostor"
+    service.end_game.assert_awaited_once()
+    end_result = service.end_game.await_args.kwargs["result"]
+    assert end_result["winner"] == "impostor"
 
 
 async def test_finalize_voting_skip_majority_starts_next_round(
@@ -157,3 +187,26 @@ async def test_cast_vote_after_deadline_finalizes_and_errors(
         await service.cast_vote("room-1", "conn-1", "conn-2", notifier)
 
     finalize.assert_awaited_once()
+
+
+async def test_cast_vote_rejects_repeat_vote(mocker: MockerFixture):
+    store = mocker.Mock()
+    store.get_room_name = mocker.AsyncMock(return_value="Room One")
+    store.get_turn_state = mocker.AsyncMock(
+        return_value={
+            "phase": "voting",
+            "round": 1,
+            "vote_deadline_ts": time.time() + 30,
+            "voters": json.dumps(["conn-1", "conn-2"]),
+        }
+    )
+    store.set_vote = mocker.AsyncMock()
+    store.get_votes = mocker.AsyncMock(return_value={"conn-1": "conn-2"})
+    notifier = mocker.Mock()
+    notifier.broadcast = mocker.AsyncMock()
+    service = GameService(store)
+
+    with pytest.raises(RuntimeError):
+        await service.cast_vote("room-1", "conn-1", "skip", notifier)
+
+    store.set_vote.assert_not_called()

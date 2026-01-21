@@ -17,6 +17,9 @@ def store(mocker):
     store.remove_conn = mocker.AsyncMock()
     store.set_ready = mocker.AsyncMock()
     store.get_lobby_state = mocker.AsyncMock()
+    store.get_room_settings = mocker.AsyncMock(return_value={"max_players": 8})
+    store.set_room_settings = mocker.AsyncMock()
+    store.set_nickname = mocker.AsyncMock()
     store.set_secret_word = mocker.AsyncMock()
     store.set_impostor = mocker.AsyncMock()
     store.set_role = mocker.AsyncMock()
@@ -27,6 +30,12 @@ def store(mocker):
     store.set_turn_state = mocker.AsyncMock()
     store.get_turn_state = mocker.AsyncMock(return_value=None)
     store.clear_turn_state = mocker.AsyncMock()
+    store.append_turn_word = mocker.AsyncMock()
+    store.get_turn_words = mocker.AsyncMock(return_value=[])
+    store.clear_turn_words = mocker.AsyncMock()
+    store.append_word_history = mocker.AsyncMock()
+    store.get_word_history = mocker.AsyncMock(return_value=[])
+    store.clear_word_history = mocker.AsyncMock()
     store.peek_resume_token = mocker.AsyncMock()
     return store
 
@@ -53,8 +62,9 @@ async def test_join_room_adds_conn_and_returns_conns(store):
     room_name, conns = await service.join_room("room-1", "conn-1", nickname="Nick")
 
     store.get_room_name.assert_awaited_once_with("room-1")
+    store.get_room_settings.assert_awaited_once_with("room-1")
     store.add_conn.assert_awaited_once_with("room-1", "conn-1", nickname="Nick")
-    store.list_conns.assert_awaited_once_with("room-1")
+    assert store.list_conns.await_count == 2
     assert room_name == "Room One"
     assert conns == {"conn-1", "conn-2"}
 

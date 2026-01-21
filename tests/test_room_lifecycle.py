@@ -56,6 +56,7 @@ async def test_start_game_requires_host_and_all_ready(mocker: MockerFixture):
         }
     )
     store.set_game_state = mocker.AsyncMock()
+    store.clear_word_history = mocker.AsyncMock()
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2"})
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
@@ -69,6 +70,7 @@ async def test_start_game_requires_host_and_all_ready(mocker: MockerFixture):
     store.get_room_name.assert_awaited_once_with("room-1")
     store.get_lobby_state.assert_awaited_once_with("room-1")
     store.set_game_state.assert_awaited_once_with("room-1", "in_progress")
+    store.clear_word_history.assert_awaited_once_with("room-1")
     assign_roles.assert_awaited_once_with("room-1", notifier)
     start_rounds.assert_awaited_once_with(
         "room-1", notifier, store.get_lobby_state.return_value
@@ -119,9 +121,23 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
         return_value={"winner": "crew", "reason": "win_condition"}
     )
     store.list_conns = mocker.AsyncMock(return_value={"conn-1", "conn-2"})
+    store.set_ready = mocker.AsyncMock()
+    store.get_lobby_state = mocker.AsyncMock(
+        return_value={
+            "room_id": "room-1",
+            "players": {
+                "conn-1": {"nick": "Host", "ready": False},
+                "conn-2": {"nick": "Player", "ready": False},
+            },
+            "host": "conn-1",
+            "settings": {"round_time": 60},
+        }
+    )
     store.clear_roles = mocker.AsyncMock()
     store.clear_turn_state = mocker.AsyncMock()
     store.clear_votes = mocker.AsyncMock()
+    store.clear_turn_words = mocker.AsyncMock()
+    store.clear_word_history = mocker.AsyncMock()
     notifier = mocker.Mock()
     notifier.broadcast = mocker.AsyncMock()
     service = GameService(store)
@@ -131,13 +147,25 @@ async def test_end_game_broadcasts_and_returns_result(mocker: MockerFixture):
     store.get_room_name.assert_awaited_once_with("room-1")
     store.end_game.assert_awaited_once_with("room-1", result=None)
     store.list_conns.assert_awaited_once_with("room-1")
-    notifier.broadcast.assert_awaited_once_with(
-        {"conn-1", "conn-2"},
-        {"type": "game_ended", "room_id": "room-1", "result": result},
-    )
+    assert notifier.broadcast.await_count == 2
+    first_payload = notifier.broadcast.await_args_list[0].args[1]
+    second_payload = notifier.broadcast.await_args_list[1].args[1]
+    assert first_payload == {
+        "type": "game_ended",
+        "room_id": "room-1",
+        "result": result,
+    }
+    assert second_payload["type"] == "lobby_state"
+    assert second_payload["room_id"] == "room-1"
+    assert second_payload["state"]["players"]["conn-1"]["ready"] is False
+    assert second_payload["state"]["players"]["conn-2"]["ready"] is False
+    store.set_ready.assert_any_await("room-1", "conn-1", False)
+    store.set_ready.assert_any_await("room-1", "conn-2", False)
     store.clear_roles.assert_awaited_once_with("room-1")
     store.clear_turn_state.assert_awaited_once_with("room-1")
     store.clear_votes.assert_awaited_once_with("room-1")
+    store.clear_turn_words.assert_awaited_once_with("room-1")
+    store.clear_word_history.assert_awaited_once_with("room-1")
 
 
 async def test_disconnect_removes_conn_and_returns_resume_token(
