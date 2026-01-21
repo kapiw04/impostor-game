@@ -1,15 +1,17 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from impostor.api.routes.game import game_router
-from impostor.api.routes.rooms import rooms_router
-from contextlib import asynccontextmanager
-import redis.asyncio as redis
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 
+import redis.asyncio as redis
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from impostor.api.routes.game import game_router
+from impostor.api.routes.rooms import rooms_router
 from impostor.application.game_service import GameService
 from impostor.application.room_service import RoomService
 from impostor.config import Config
+from impostor.env import load_env_file
 from impostor.infrastructure.redis_room_store import RedisRoomStore
 from impostor.infrastructure.ws_manager import WSManager
 
@@ -44,6 +46,7 @@ def app_factory(redis_url):
     return app
 
 
+load_env_file()
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 app = app_factory(REDIS_URL)
