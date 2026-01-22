@@ -21,6 +21,8 @@ class RedisRoomStore:
         self._default_settings = (
             config or Config()
         ).redis_room_store.settings.as_dict()
+        self._turn_state_cache: dict[str, dict[str, Any]] = {}
+        self._room_conns_cache: dict[str, set[str]] = {}
 
     def _room_key(self, room_id: str) -> str:
         return f"room:{room_id}"
@@ -84,6 +86,7 @@ class RedisRoomStore:
         ready: bool = False,
     ) -> None:
         await _await(self._r.sadd(self._room_conns_key(room_id), conn_id))
+        self._room_conns_cache.setdefault(room_id, set()).add(conn_id)
         mapping: dict[str, Any] = {"room_id": room_id, "ready": "1" if ready else "0"}
         if nickname:
             mapping["nickname"] = nickname
@@ -100,18 +103,28 @@ class RedisRoomStore:
 
     async def remove_conn(self, room_id: str, conn_id: str) -> None:
         await _await(self._r.srem(self._room_conns_key(room_id), conn_id))
+        cache = self._room_conns_cache.get(room_id)
+        if cache is not None:
+            cache.discard(conn_id)
+            if not cache:
+                self._room_conns_cache.pop(room_id, None)
         await _await(self._r.delete(self._conn_key(conn_id)))
         host_key = self._room_host_key(room_id)
         host = await _await(self._r.get(host_key))
         if host == conn_id:
             await _await(self._r.delete(host_key))
-            remaining = await _await(self._r.smembers(self._room_conns_key(room_id)))
+            remaining = await self.list_conns(room_id)
             if remaining:
                 new_host = sorted(remaining)[0]
                 await _await(self._r.set(host_key, new_host))
 
     async def list_conns(self, room_id: str) -> set[str]:
-        return await _await(self._r.smembers(self._room_conns_key(room_id)))
+        cached = self._room_conns_cache.get(room_id)
+        if cached is not None:
+            return set(cached)
+        conns = await _await(self._r.smembers(self._room_conns_key(room_id)))
+        self._room_conns_cache[room_id] = set(conns)
+        return set(conns)
 
     async def set_ready(self, room_id: str, conn_id: str, ready: bool) -> None:
         await _await(
@@ -206,8 +219,12 @@ class RedisRoomStore:
     async def set_turn_state(self, room_id: str, state: dict[str, Any]) -> None:
         mapping = {key: str(value) for key, value in state.items()}
         await _await(self._r.hset(self._turn_state_key(room_id), mapping=mapping))
+        self._turn_state_cache[room_id] = dict(state)
 
     async def get_turn_state(self, room_id: str) -> dict[str, Any] | None:
+        cached = self._turn_state_cache.get(room_id)
+        if cached is not None:
+            return dict(cached)
         data = await _await(self._r.hgetall(self._turn_state_key(room_id)))
         if not data:
             return None
@@ -228,12 +245,14 @@ class RedisRoomStore:
                 parsed[key] = float(value)
             else:
                 parsed[key] = value
-        return parsed
+        self._turn_state_cache[room_id] = dict(parsed)
+        return dict(parsed)
 
     async def clear_turn_state(self, room_id: str) -> None:
         await _await(self._r.delete(self._turn_state_key(room_id)))
         await _await(self._r.delete(self._turn_order_key(room_id)))
         await _await(self._r.delete(self._room_votes_key(room_id)))
+        self._turn_state_cache.pop(room_id, None)
 
     async def append_turn_word(self, room_id: str, entry: dict[str, Any]) -> None:
         await _await(

@@ -3,7 +3,8 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from impostor.api.routes.game import game_router
@@ -42,11 +43,19 @@ def app_factory(redis_url):
     static_dir = Path(__file__).resolve().parent.parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir, html=True), name="static")
+        index_file = static_dir / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        def read_index():
+            if not index_file.exists():
+                raise HTTPException(status_code=404, detail="Index file not found")
+            return FileResponse(index_file)
 
     return app
 
 
 load_env_file()
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+print("Running app with", REDIS_URL)
 
 app = app_factory(REDIS_URL)
